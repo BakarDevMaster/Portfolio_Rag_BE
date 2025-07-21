@@ -11,8 +11,8 @@ dependencies = [
     "langchain-groq>=0.3.6",
     "redis[async]",
     "openai-agents>=0.2.1",
-    "pinecone>=7.0.0",
     "pypdf2>=3.0.1",
     "python-dotenv>=1.1.1",
     "sentence-transformers>=5.0.0",
+    "pinecone>=7.3.0",
 ]
