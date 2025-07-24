@@ -72,17 +72,46 @@ async def query_agent(request: QueryRequest):
             print("Embedding user input...")
             query_embedding = embedder.encode([user_input]).tolist()[0]
             print("Querying Pinecone...")
-            result = index.query(vector=query_embedding, top_k=3, include_metadata=True)
-            print("Pinecone result:", result)
-            retrieved_docs = [match['metadata']['text'] for match in result['matches']]
-            context = "\n".join(retrieved_docs) if retrieved_docs else "No relevant info found."
+            result = index.query(vector=query_embedding, top_k=10, include_metadata=True)  # Increased to 10 for better coverage
+            print("Querying Pinecone with:", user_input)
+            
+            # Filter matches by similarity threshold
+            similarity_threshold = 0.25  # Adjust based on your needs
+            relevant_matches = [match for match in result['matches'] if match['score'] >= similarity_threshold]
+            
+            print(f"Found {len(result['matches'])} total matches, {len(relevant_matches)} above threshold {similarity_threshold}")
+            
+            if relevant_matches:
+                retrieved_docs = [match['metadata']['text'] for match in relevant_matches]
+                
+                # Format context more clearly with scores
+                context = "Here is the relevant information about me (from my portfolio):\n\n"
+                for i, (doc, match) in enumerate(zip(retrieved_docs, relevant_matches), 1):
+                    score = match['score']
+                    context += f"[Relevance: {score:.2f}] {doc}\n\n"
+            else:
+                context = "No highly relevant information found in my portfolio for this specific question."
+                retrieved_docs = []
+            
+            print("Retrieved context:", context)
         except Exception as e:
             print("Pinecone error:", e)
             raise HTTPException(status_code=500, detail=f"Pinecone error: {str(e)}")
 
         # Build messages for LLM
+        system_prompt = f"""You are Muhammad Abubakar speaking directly to the person. Always respond in first person as if you are me talking to them.
+        Use a friendly, professional tone and speak directly to the person. Never say phrases like 'based on the portfolio' or 'the developer's'.
+        Instead, use 'I', 'my', 'me' etc. For example, if asked about skills, say 'I am skilled in...' or 'My expertise includes...'
+        
+        IMPORTANT: Use the context provided below to answer questions about me. If the context doesn't contain enough information to fully answer the question, acknowledge what you know from the context and politely mention that you might need more specific information.
+        
+        Context about me:
+        {context}
+        
+        If no relevant context is provided, politely explain that you don't have specific information about that topic in your current knowledge base and suggest they ask about my technical skills, projects, or experience."""
+        
         messages = history + [
-            {"role": "system", "content": f"Answer based on this context: {context}"},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_input}
         ]
 
