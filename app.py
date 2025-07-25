@@ -27,6 +27,25 @@ index = pc.Index(index_name)
 # Load embedding model
 embedder = SentenceTransformer('all-MiniLM-L6-v2')
 
+# Portfolio-related keywords and topics for relevance detection
+PORTFOLIO_KEYWORDS = [
+    'muhammad', 'abubakar', 'portfolio', 'experience', 'skills', 'projects', 'education',
+    'work', 'job', 'career', 'developer', 'programming', 'coding', 'software', 'technology',
+    'frontend', 'backend', 'fullstack', 'web', 'mobile', 'app', 'application', 'development',
+    'javascript', 'python', 'react', 'node', 'database', 'api', 'framework', 'library',
+    'github', 'linkedin', 'contact', 'email', 'phone', 'resume', 'cv', 'qualification',
+    'certificate', 'degree', 'university', 'college', 'internship', 'freelance', 'client',
+    'achievement', 'award', 'recognition', 'expertise', 'proficient', 'familiar', 'knowledge'
+]
+
+# Non-portfolio topics that should be declined
+NON_PORTFOLIO_TOPICS = [
+    'weather', 'news', 'current events', 'politics', 'sports', 'entertainment', 'movies',
+    'music', 'food', 'recipes', 'health', 'medical', 'travel', 'geography', 'history',
+    'science', 'math', 'physics', 'chemistry', 'biology', 'astronomy', 'philosophy',
+    'religion', 'culture', 'language', 'translation', 'joke', 'story', 'game', 'puzzle'
+]
+
 # Upstash Redis configuration (HTTP API, async)
 redis = Redis(
     url="https://popular-dane-32451.upstash.io",
@@ -43,6 +62,43 @@ async def get_conversation_history(session_id):
 async def save_conversation_history(session_id, history):
     await redis.set(session_id, json.dumps(history))
 
+# Function to check if a question is portfolio-related
+def is_portfolio_related(question: str) -> bool:
+    """
+    Determine if a question is related to Muhammad Abubakar's portfolio.
+    Returns True if portfolio-related, False otherwise.
+    """
+    question_lower = question.lower()
+    
+    # Check for non-portfolio topics first (more specific)
+    for topic in NON_PORTFOLIO_TOPICS:
+        if topic in question_lower:
+            return False
+    
+    # Check for portfolio-related keywords
+    portfolio_score = 0
+    for keyword in PORTFOLIO_KEYWORDS:
+        if keyword in question_lower:
+            portfolio_score += 1
+    
+    # If question contains portfolio keywords, it's likely portfolio-related
+    if portfolio_score > 0:
+        return True
+    
+    # Check for common question patterns that might be portfolio-related
+    portfolio_patterns = [
+        'tell me about', 'what is your', 'what are your', 'how do you',
+        'can you', 'do you have', 'what technologies', 'what languages',
+        'your background', 'your experience', 'about you', 'who are you'
+    ]
+    
+    for pattern in portfolio_patterns:
+        if pattern in question_lower:
+            return True
+    
+    # If no clear indicators, default to False (decline)
+    return False
+
 # Pydantic model for query input
 class QueryRequest(BaseModel):
     question: str
@@ -57,6 +113,27 @@ async def query_agent(request: QueryRequest):
         if not user_input or not session_id:
             print("Missing question or session_id")
             raise HTTPException(status_code=400, detail="Please provide a question and session_id")
+        
+        # Check if the question is portfolio-related
+        if not is_portfolio_related(user_input):
+            print(f"Non-portfolio question detected: {user_input}")
+            decline_message = (
+                "I'm sorry, but I'm specifically designed to answer questions about Muhammad Abubakar's "
+                "portfolio, professional experience, skills, and projects. I can help you learn about my "
+                "technical expertise, work experience, education, or any specific projects I've worked on. "
+                "Please feel free to ask me anything related to my professional background!"
+            )
+            
+            # Still save to conversation history for context
+            try:
+                history = await get_conversation_history(session_id)
+                history.append({"role": "user", "content": user_input})
+                history.append({"role": "assistant", "content": decline_message})
+                await save_conversation_history(session_id, history)
+            except Exception as e:
+                print(f"Error saving decline message to history: {e}")
+            
+            return {"response": decline_message}
 
         # Retrieve conversation history
         try:
@@ -103,12 +180,15 @@ async def query_agent(request: QueryRequest):
         Use a friendly, professional tone and speak directly to the person. Never say phrases like 'based on the portfolio' or 'the developer's'.
         Instead, use 'I', 'my', 'me' etc. For example, if asked about skills, say 'I am skilled in...' or 'My expertise includes...'
         
-        IMPORTANT: Use the context provided below to answer questions about me. If the context doesn't contain enough information to fully answer the question, acknowledge what you know from the context and politely mention that you might need more specific information.
+        CRITICAL RESTRICTION: You must ONLY answer questions related to my portfolio, professional experience, skills, projects, education, and career. 
+        Do NOT provide information about general topics, current events, weather, entertainment, or any non-portfolio related subjects.
+        
+        IMPORTANT: Use ONLY the context provided below to answer questions about me. If the context doesn't contain enough information to fully answer the question, acknowledge what you know from the context and politely mention that you might need more specific information about my professional background.
         
         Context about me:
         {context}
         
-        If no relevant context is provided, politely explain that you don't have specific information about that topic in your current knowledge base and suggest they ask about my technical skills, projects, or experience."""
+        If no relevant context is provided, politely explain that you don't have specific information about that topic in your current knowledge base and suggest they ask about my technical skills, projects, work experience, or education."""
         
         messages = history + [
             {"role": "system", "content": system_prompt},
