@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
@@ -7,6 +8,8 @@ from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel
 import json
 from upstash_redis.asyncio import Redis
+import asyncio
+import re
 
 load_dotenv()
 
@@ -62,6 +65,40 @@ async def get_conversation_history(session_id):
 async def save_conversation_history(session_id, history):
     await redis.set(session_id, json.dumps(history))
 
+# Function to clean markdown formatting from response
+def clean_markdown_formatting(text: str) -> str:
+    """
+    Remove markdown formatting from text to ensure plain text output.
+    """
+    # Remove markdown bullet points
+    text = re.sub(r'^\s*[*-]\s+', '', text, flags=re.MULTILINE)
+    # Remove markdown numbered lists
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+    # Remove markdown headers
+    text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
+    # Remove markdown bold/italic
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'_([^_]+)_', r'\1', text)
+    # Remove markdown code blocks
+    text = re.sub(r'```[^`]*```', '', text, flags=re.DOTALL)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    # Clean up extra whitespace
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    text = text.strip()
+    return text
+
+# Streaming generator function
+async def stream_response(text: str):
+    """
+    Stream text character by character with a small delay.
+    """
+    for char in text:
+        yield f"data: {json.dumps({'char': char})}\n\n"
+        await asyncio.sleep(0.05)  # 50ms delay between characters
+    yield f"data: {json.dumps({'done': True})}\n\n"
+
 # Function to check if a question is portfolio-related
 def is_portfolio_related(question: str) -> bool:
     """
@@ -103,6 +140,7 @@ def is_portfolio_related(question: str) -> bool:
 class QueryRequest(BaseModel):
     question: str
     session_id: str  # New field for session tracking
+    stream: bool = True  # New field to enable/disable streaming
 
 # Query endpoint
 @app.post("/query")
@@ -183,6 +221,8 @@ async def query_agent(request: QueryRequest):
         CRITICAL RESTRICTION: You must ONLY answer questions related to my portfolio, professional experience, skills, projects, education, and career. 
         Do NOT provide information about general topics, current events, weather, entertainment, or any non-portfolio related subjects.
         
+        IMPORTANT FORMATTING: Respond in plain text format. Do NOT use markdown formatting, bullet points (*), numbered lists, or any special characters for formatting. Write in natural, conversational sentences and paragraphs. Use simple line breaks for separation if needed.
+        
         IMPORTANT: Use ONLY the context provided below to answer questions about me. If the context doesn't contain enough information to fully answer the question, acknowledge what you know from the context and politely mention that you might need more specific information about my professional background.
         
         Context about me:
@@ -210,18 +250,35 @@ async def query_agent(request: QueryRequest):
             print("Groq/OpenAI error:", e)
             raise HTTPException(status_code=500, detail=f"Groq/OpenAI error: {str(e)}")
 
+        # Clean markdown formatting from the response
+        cleaned_answer = clean_markdown_formatting(answer)
+        print("Cleaned response:", cleaned_answer)
+
         # Update conversation history
         try:
             print("Saving conversation history to Redis...")
             history.append({"role": "user", "content": user_input})
-            history.append({"role": "assistant", "content": answer})
+            history.append({"role": "assistant", "content": cleaned_answer})
             await save_conversation_history(session_id, history)
             print("History saved.")
         except Exception as e:
             print("Redis save error:", e)
             raise HTTPException(status_code=500, detail=f"Redis save error: {str(e)}")
 
-        return {"response": answer}
+        # Return streaming or regular response based on request
+        if request.stream:
+            return StreamingResponse(
+                stream_response(cleaned_answer),
+                media_type="text/plain",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "*"
+                }
+            )
+        else:
+            return {"response": cleaned_answer}
 
     except Exception as e:
         print("General error:", e)
