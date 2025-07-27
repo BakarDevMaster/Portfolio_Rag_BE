@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
@@ -14,6 +15,16 @@ import re
 load_dotenv()
 
 app = FastAPI(title="Portfolio AI Query Backend")
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict this to your frontend's domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # Configure Groq client
 client = AsyncOpenAI(
@@ -51,8 +62,8 @@ NON_PORTFOLIO_TOPICS = [
 
 # Upstash Redis configuration (HTTP API, async)
 redis = Redis(
-    url="https://popular-dane-32451.upstash.io",
-    token="AX7DAAIjcDFiMDBmNzA4NTE2MGQ0MDMzYTg1OThmYjRmNTU5MjAzOXAxMA"
+    url=os.getenv("UPSTASH_REDIS_URL"),
+    token=os.getenv("UPSTASH_REDIS_TOKEN")
 )
 
 # Helper functions for conversation history
@@ -269,13 +280,7 @@ async def query_agent(request: QueryRequest):
         if request.stream:
             return StreamingResponse(
                 stream_response(cleaned_answer),
-                media_type="text/plain",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Headers": "*"
-                }
+                media_type="text/event-stream" # Correct media type for SSE
             )
         else:
             return {"response": cleaned_answer}
