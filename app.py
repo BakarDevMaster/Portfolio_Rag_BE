@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
+import spacy
 from pydantic import BaseModel
 import json
 from upstash_redis.asyncio import Redis
@@ -38,8 +38,9 @@ index_name = "pdf-rag-index"  # or your actual index name
 index = pc.Index(index_name)
 # print(f"Index {index_name} loaded with stats: {index.describe_index_stats()}")
 
-# Load embedding model
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+# Load lightweight spaCy model for embeddings
+# Ensure the model is downloaded:  python -m spacy download en_core_web_md
+nlp = spacy.load('en_core_web_md')
 
 # Portfolio-related keywords and topics for relevance detection
 PORTFOLIO_KEYWORDS = [
@@ -196,7 +197,7 @@ async def query_agent(request: QueryRequest):
         # Embed and retrieve context as before
         try:
             print("Embedding user input...")
-            query_embedding = embedder.encode([user_input]).tolist()[0]
+            query_embedding = nlp(user_input).vector.tolist()
             print("Querying Pinecone...")
             result = index.query(vector=query_embedding, top_k=10, include_metadata=True)  # Increased to 10 for better coverage
             print("Querying Pinecone with:", user_input)
