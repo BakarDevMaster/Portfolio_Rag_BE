@@ -1,15 +1,17 @@
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
+import spacy
 import os
 from dotenv import load_dotenv
 import re
 
 load_dotenv()
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-index = pc.Index("pdf-rag-index")
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+index_name = "pdf-rag-index-384"
+index = pc.Index(index_name)
+nlp = spacy.load('en_core_web_md')
+TARGET_EMBED_DIM = 384  # must match Pinecone index dimension
 
 def extract_text_from_pdf(pdf_path):
     """Extract and clean text from PDF"""
@@ -83,9 +85,16 @@ def upload_improved_pdf():
     for i, chunk in enumerate(chunks[:3]):
         print(f"Chunk {i+1}: {chunk[:100]}...")
     
-    # Generate embeddings
+    # Generate embeddings using spaCy and pad to 384-dim
     print("\nGenerating embeddings...")
-    embeddings = embedder.encode(chunks).tolist()
+    embeddings = []
+    for chunk in chunks:
+        vec = nlp(chunk).vector
+        if vec.shape[0] < TARGET_EMBED_DIM:
+            vec = vec.tolist() + [0.0] * (TARGET_EMBED_DIM - vec.shape[0])
+        else:
+            vec = vec[:TARGET_EMBED_DIM].tolist()
+        embeddings.append(vec)
     print(f"Generated {len(embeddings)} embeddings")
     
     # Create vectors with better metadata
@@ -129,7 +138,12 @@ def test_retrieval():
     for query in test_queries:
         print(f"\nTesting: '{query}'")
         try:
-            query_embedding = embedder.encode([query]).tolist()[0]
+            vec = nlp(query).vector
+            if vec.shape[0] < TARGET_EMBED_DIM:
+                vec = vec.tolist() + [0.0]*(TARGET_EMBED_DIM - vec.shape[0])
+            else:
+                vec = vec[:TARGET_EMBED_DIM].tolist()
+            query_embedding = vec
             result = index.query(
                 vector=query_embedding, 
                 top_k=5, 

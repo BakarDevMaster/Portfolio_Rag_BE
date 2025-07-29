@@ -34,13 +34,14 @@ client = AsyncOpenAI(
 
 # Initialize Pinecone client and index
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-index_name = "pdf-rag-index"  # or your actual index name
+index_name = "pdf-rag-index-384"  # or your actual index name
 index = pc.Index(index_name)
 # print(f"Index {index_name} loaded with stats: {index.describe_index_stats()}")
 
-# Load lightweight spaCy model for embeddings
+# Load lightweight spaCy model for embeddings (300-d)
 # Ensure the model is downloaded:  python -m spacy download en_core_web_md
 nlp = spacy.load('en_core_web_md')
+TARGET_EMBED_DIM = 384  # Pinecone index dimension
 
 # Portfolio-related keywords and topics for relevance detection
 PORTFOLIO_KEYWORDS = [
@@ -63,8 +64,8 @@ NON_PORTFOLIO_TOPICS = [
 
 # Upstash Redis configuration (HTTP API, async)
 redis = Redis(
-    url=os.getenv("UPSTASH_REDIS_URL"),
-    token=os.getenv("UPSTASH_REDIS_TOKEN")
+    url='https://popular-dane-32451.upstash.io',
+    token='AX7DAAIjcDFiMDBmNzA4NTE2MGQ0MDMzYTg1OThmYjRmNTU5MjAzOXAxMA'
 )
 
 # Helper functions for conversation history
@@ -112,29 +113,36 @@ async def stream_response(text: str):
     yield f"data: {json.dumps({'done': True})}\n\n"
 
 # Function to check if a question is portfolio-related
+import difflib
+
+
+def _fuzzy_in(text: str, terms: list[str], cutoff: float = 0.85) -> bool:
+    """Return True if any term appears in text with fuzzy ratio >= cutoff"""
+    words = text.split()
+    for term in terms:
+        # fast exact check first
+        if term in text:
+            return True
+        # fuzzy check each word in question against the term
+        for w in words:
+            if difflib.SequenceMatcher(None, w, term).ratio() >= cutoff:
+                return True
+    return False
+
+
 def is_portfolio_related(question: str) -> bool:
-    """
-    Determine if a question is related to Muhammad Abubakar's portfolio.
-    Returns True if portfolio-related, False otherwise.
-    """
+    """Determine if a question is related to Muhammad Abubakar's portfolio with typo tolerance."""
     question_lower = question.lower()
-    
-    # Check for non-portfolio topics first (more specific)
-    for topic in NON_PORTFOLIO_TOPICS:
-        if topic in question_lower:
-            return False
-    
-    # Check for portfolio-related keywords
-    portfolio_score = 0
-    for keyword in PORTFOLIO_KEYWORDS:
-        if keyword in question_lower:
-            portfolio_score += 1
-    
-    # If question contains portfolio keywords, it's likely portfolio-related
-    if portfolio_score > 0:
+
+    # Decline if it matches any non-portfolio topic (exact or fuzzy)
+    if _fuzzy_in(question_lower, NON_PORTFOLIO_TOPICS, cutoff=0.9):
+        return False
+
+    # Accept if it matches portfolio keywords (exact or fuzzy)
+    if _fuzzy_in(question_lower, PORTFOLIO_KEYWORDS, cutoff=0.8):
         return True
-    
-    # Check for common question patterns that might be portfolio-related
+
+    # Fallback to pattern heuristics
     portfolio_patterns = [
         'tell me about', 'what is your', 'what are your', 'how do you',
         'can you', 'do you have', 'what technologies', 'what languages',
@@ -197,7 +205,14 @@ async def query_agent(request: QueryRequest):
         # Embed and retrieve context as before
         try:
             print("Embedding user input...")
-            query_embedding = nlp(user_input).vector.tolist()
+            vec = nlp(user_input).vector
+            # Pad to 384-d (append zeros)
+            if vec.shape[0] < TARGET_EMBED_DIM:
+                padding = [0.0] * (TARGET_EMBED_DIM - vec.shape[0])
+                vec = vec.tolist() + padding
+            else:
+                vec = vec[:TARGET_EMBED_DIM].tolist()
+            query_embedding = vec
             print("Querying Pinecone...")
             result = index.query(vector=query_embedding, top_k=10, include_metadata=True)  # Increased to 10 for better coverage
             print("Querying Pinecone with:", user_input)
