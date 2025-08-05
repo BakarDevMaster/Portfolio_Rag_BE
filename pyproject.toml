@@ -15,7 +15,7 @@ dependencies = [
     "pypdf2>=3.0.1",
     "python-dotenv>=1.1.1",
     "spacy>=3.7.0",
-    "pinecone-client>=3.0.0",
+    "pinecone>=3.0.0",
     "upstash-redis>=1.4.0",
-    "spacy>=3.8.7",
+
 ]
